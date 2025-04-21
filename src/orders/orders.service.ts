@@ -12,6 +12,8 @@ import { OrderPaginationDto } from './dto/order-pagination.dto';
 import { ChangeOrderStatusDto } from './dto/changer-order-status.dto';
 import { NATS_SERVICE } from 'src/config/services';
 import { firstValueFrom } from 'rxjs';
+import { OrderWithProducts } from './interfaces/order-with-products.interface';
+import { PaidOrderDto } from './dto';
 
 @Injectable()
 export class OrdersService extends PrismaClient implements OnModuleInit {
@@ -20,9 +22,7 @@ export class OrdersService extends PrismaClient implements OnModuleInit {
     await this.$connect();
     this.logger.log(`Database Connected`);
   }
-  constructor(
-    @Inject(NATS_SERVICE) private readonly client: ClientProxy,
-  ) {
+  constructor(@Inject(NATS_SERVICE) private readonly client: ClientProxy) {
     super();
   }
   async create(createOrderDto: CreateOrderDto) {
@@ -76,7 +76,8 @@ export class OrdersService extends PrismaClient implements OnModuleInit {
         ...order,
         OrderItem: order.OrderItem.map((orderItem) => ({
           ...orderItem,
-          name: products.find((product) => product.id === orderItem.productId),
+          name: products.find((product) => product.id === orderItem.productId)
+            .name,
         })),
       };
     } catch (error) {
@@ -165,5 +166,38 @@ export class OrdersService extends PrismaClient implements OnModuleInit {
         status,
       },
     });
+  }
+  async createPaymentSession(order: OrderWithProducts) {
+    const paymentSession = await firstValueFrom(
+      this.client.send('create.payment.session', {
+        orderId: order.id,
+        currency: 'usd',
+        items: order.OrderItem.map((orderItem) => ({
+          name: orderItem.name,
+          price: orderItem.price,
+          quantity: orderItem.quantity,
+        })),
+      }),
+    );
+    return paymentSession;
+  }
+  async paidOrder(paidOrderDto: PaidOrderDto) {
+    const updatedOrder = await this.order.update({
+      where: {
+        id: paidOrderDto.orderId,
+      },
+      data: {
+        status: 'PAID',
+        paid: true,
+        paidAt: new Date(),
+        stripeChargedId: paidOrderDto.stripePaumentId,
+        OrderReceipt: {
+          create: {
+            receiptUrl: paidOrderDto.receiptUrl,
+          },
+        },
+      },
+    });
+    return updatedOrder;
   }
 }
